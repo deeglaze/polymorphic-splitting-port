@@ -265,13 +265,12 @@
         (let ([first #t]
               [val #f])
           (lambda ()
-            (match first
-              ['forcing (error 'force "recursive force")]
-              [#t (set! first 'forcing)
-                  (set! val (thunk))
-                  (set! first #f)
-                  val]
-              [#f val])))))
+            (cond [(eq? first 'forcing) (error 'force "recursive force")]
+                  [first (set! first 'forcing)
+                         (set! val (thunk))
+                         (set! first #f)
+                         val]
+                  [else val])))))
     (define force (lambda (promise) (promise)))
     (define make-list
       (lambda (n val)

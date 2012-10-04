@@ -91,17 +91,24 @@
       (ensure-no-repeats xs context)
       (let* ([newenv (extend-env* env xs names)]
              [defs (mkdef newenv)]
-             [exps (map (lambda (x)
-                          (parse-exp x newenv context))
-                        unparsed)]
+             [exps (for/list ([x (in-list unparsed)])
+                     (parse-exp x newenv context))]
              [defines-only (filter Define? defs)])
         (make-components! defines-only)
-        (let ([body (if (null? (cdr exps))
-                        (car exps)
-                        (make-E (Begin exps)))])
-          (if (null? defs)
-              body
-              (make-E (Letr defs body))))))))
+        (let ([body (cond [(null? (cdr exps)) (car exps)]
+                          [else (make-E (Begin exps))])])
+          (cond [(null? defs) body]
+                [else (make-E (Letr defs body))]))))))
+
+;; We don't have a r4rs macro expander, so hard-code what's necessary.
+(define hack-expand
+  (match-lambda
+   [`(recur ,name ([,id ,e] ...) ,body ...)
+    `(letrec ([,name (lambda ,id ,@body)])
+       (,name ,@e))]
+   [`(match ,args) (error 'hack-expand "Uh oh (match ~a)" args)]
+   [_ #f]))
+     
 
 ;; returns list of x's, list of names, env -> list of Defines, list of unparsed exps
 (define try-parse-def
@@ -111,11 +118,12 @@
        (match (lookup? env fun)
          [(Keyword #f _) (list '() '() (lambda _ '()) (list x))]
          [(Keyword f _) (f x env context)]
-         [(Macro f) (try-parse-def (f x env context) env context)]
-         [_ (match (and (not (lookup? basic-env fun))
-                        #;(expand-once-if-macro x) #f)
-              [#f (list '() '() (lambda _ '()) (list x))]
-              [x2 (try-parse-def x2 env context)])])]
+         [(Macro f) (try-parse-def (f x env context) env context)]         
+         [_ 
+          (match (and (not (lookup? basic-env fun))
+                      (hack-expand x))
+            [#f (list '() '() (lambda _ '()) (list x))]
+            [x2 (try-parse-def x2 env context)])])]
       [_ (list '() '() (lambda _ '()) (list x))])))
 
 ;; returns list of x's, list of names, env -> list of Defines, list of unparsed exps
@@ -286,7 +294,7 @@
              [(Keyword _ f) (f x env context)]
              [(Macro f) (parse-exp (f x env context) env context)]
              [_ (match (and (not (lookup? basic-env fun))
-                            #;(expand-once-if-macro x) #f)
+                            (hack-expand x))
                   [#f (parse-app x env context)]
                   [x2 (parse-exp x2 env context)])])
            (parse-app x env context))]
@@ -394,7 +402,8 @@
               [bindings (map (lambda (name e)
                                (make-Define
                                  name
-                                 (parse-exp e env (extend-context (Name-name name) context))))
+                                 (parse-exp e env
+                                            (extend-context (Name-name name) context))))
                              names
                              exps)]
               [e (make-E (Let bindings (parse-body body new-env context)))])
@@ -406,14 +415,13 @@
     (match x
       [(list-rest _ (list (list (? symbol? vars) exps) ...) body)
        (ensure-no-repeats vars context)
-       (let* ([names (map (lambda (s) (make-Name s context)) vars)]
+       (let* ([names (for/list ([s (in-list vars)]) (make-Name s context))]
               [new-env (extend-env* env vars names)]
-              [bindings (map (lambda (name e)
-                               (make-Define
-                                 name
-                                 (parse-exp e new-env (extend-context (Name-name name) context))))
-                             names
-                             exps)]
+              [bindings (for/list ([name (in-list names)]
+                                   [e (in-list exps)])
+                          (make-Define
+                           name
+                           (parse-exp e new-env (extend-context (Name-name name) context))))]
               [e (make-E (Letr bindings (parse-body body new-env context)))])
          (make-components! bindings)
          e)]
