@@ -1,4 +1,4 @@
-#lang racket
+ #lang racket
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Find free variables of an expression or program.
@@ -8,6 +8,7 @@
 
 (require "ordset-list.rkt"
          "data.rkt"
+         racket/trace
          (for-syntax syntax/parse))
 (provide free-in-defs free-in-exp free-names)
 
@@ -33,12 +34,12 @@
 (define free
   (lambda (e)
     (match e
-      [(Define _ exp)
-       (free exp)]
+      [(Define _ exp) (free exp)]
       [(E: (Var x)) (nameset x)]
       [(E: (Lam: names body))
        (or (Lam-free (E-exp e))
-           (let ([fv (nameset-difference (free body) (list->nameset names))])
+           (let ([fv (nameset-difference (free body)
+                                         (list->nameset names))])
              (set-Lam-free! (E-exp e) fv)
              fv))]
       [(E: (Vlam: names rest body))
@@ -51,19 +52,20 @@
            ([arg (in-list args)])
          (free arg))]
       [(E: (Let b e2))
-       (for/nameset-union #:initial (nameset-difference (free e2)
-                                                        (list->nameset (definition-names b)))
+       (for/nameset-union
+        #:initial (nameset-difference (free e2)
+                                      (list->nameset (definition-names b)))
            ([cl (in-list b)])
          (free cl))]
       [(E: (Letr b e2))
-       (define names (definition-names b))
        (nameset-difference
         (for/nameset-union #:initial (free e2)
            ([cl (in-list b)])
          (free cl))
-        (list->nameset names))]
+        (list->nameset (definition-names b)))]
       [(E: (or (And exps) (Or exps) (Begin exps)))
-       (for/nameset-union ([exp (in-list exps)]) (free exps))]
+       (for/nameset-union ([exp (in-list exps)])
+         (free exp))]
       [(E: (If test then els))
        (nameset-union
         (free test)
@@ -78,9 +80,6 @@
         (nameset x))]
       [_ (nameset)])))
 
-(let ([xv (make-Name 'x '())])
-  (free (make-E (Set! xv (make-E (Var xv))))))
-
 (define (free-in-exp e)
   (define names (free e))
   (define namelist (nameset->list names))
@@ -92,11 +91,8 @@
      (nameset-difference
       (for/nameset-union ([exp (in-list defs-and-exps)]) (free-in-exp exp))
       (list->nameset
-       (filter-map
-        (match-lambda
-         [(Define x _) x]
-         [_ #f])
-        defs-and-exps))))))
+       (for/list ([e (in-list defs-and-exps)] #:when (Define? e))
+         (Define-name e)))))))
 
 (define free-names
   (lambda (e)

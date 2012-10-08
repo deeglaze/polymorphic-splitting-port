@@ -7,7 +7,9 @@
 
 (provide empty-env empty-env?
          lookup lookup? bound? extend-env extend-env*
-         join-env env->list env-domain env-range env-restrict env-map
+         join-env env->list env-domain env-range
+         env-restrict
+         env-map
          filter-env)
 
 (define empty-env '())
@@ -17,7 +19,7 @@
 (define lookup
   (lambda (env x)
     (match (assq x env)
-      [#f (error 'lookup "no binding for ~s" x)]
+      [#f (error 'lookup "no binding for ~s (~a)" x env)]
       [(cons _ b) b])))
 
 (define lookup?

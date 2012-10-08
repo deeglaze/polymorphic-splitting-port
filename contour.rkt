@@ -162,17 +162,18 @@
 (define old-poly-var-split
   (lambda (x aenv l k let-label recursive? component)
     (let ([p (index-result-map l k)]
-          [make-contour (if recursive?
-                            (let ([c (context->contour k)])
-                              (lambda (vk) (old-rec-contour vk let-label c)))
-                            (lambda (vk) (old-var-contour vk let-label l)))])
+          [make-contour
+           (cond [recursive?
+                  (define c (context->contour k))
+                  (lambda (vk) (old-rec-contour vk let-label c))]
+                 [else (lambda (vk) (old-var-contour vk let-label l))])])
       (p-> (index-var-map x (lookup aenv x))
            (lambda (new) (p+avals p (split new make-contour))))
       p)))
 
 (define old-poly-let-binding-contour
   (lambda (k l)
-    (let ((n (vector-length k)))
+    (let ([n (vector-length k)])
       (vector-tabulate
         (+ 1 n)
         (lambda (i)
@@ -181,8 +182,7 @@
               l))))))
 
 (define poly-call-site-contour
-  (lambda (l k vk)
-    vk))
+  (lambda (l k vk) vk))
 
 ;;;;;;;;;;;;;;;;
 ;; Type based splitting
@@ -294,10 +294,9 @@
     (vector-tabulate
       (vector-length k)
       (lambda (i)
-        (let ((l (vector-ref k i)))
-          (if (= l old-l)
-              (vector-ref current-k i)
-              l))))))
+        (define l (vector-ref k i))
+        (cond [(= l old-l) (vector-ref current-k i)]
+              [else l])))))
 
 ;; Build a new contour at a variable reference.
 (define max-contour 4000)
@@ -307,9 +306,8 @@
       (vector-tabulate
         (min (+ 1 n) max-contour)
         (lambda (i)
-          (if (zero? i)
-              l
-              (vector-ref k (- i 1))))))))
+          (cond [(zero? i) l]
+                [else (vector-ref k (- i 1))]))))))
 
 ;; Build a new contour at a recursive variable reference.
 (define rec-contour
@@ -325,9 +323,8 @@
     (vector-tabulate
       (min Call (+ 1 (vector-length k)))
       (lambda (i)
-        (if (zero? i)
-            l
-            (vector-ref k (- i 1)))))))
+        (cond [(zero? i) l]
+              [else (vector-ref k (- i 1))])))))
 
 ;; Build a new if contour.
 (define if-contour
@@ -392,11 +389,10 @@
 ;
 
 
-(define (false? e) (eq? e #f))
-(define (true? e) (cond ((list? e)
-			 (if (not (null? e))
-			     #t #f))
-			(else e)))
+(define false? not)
+(define (true? e)
+  (cond [(list? e) (not (null? e))]
+        [else e]))
 
 (define (make-cont-based-contour v)
   (let* ([env (aval-env v)]

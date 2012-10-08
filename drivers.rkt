@@ -60,7 +60,8 @@
 	     [before-analysis (current-inexact-milliseconds)]
 	     [print-warnings (analyse)]
 	     [before-opt (current-inexact-milliseconds)]
-             [_ (begin (optimization))]
+             [_ (begin (printf "Finished analysis.~%")
+                       (optimization))]
              [before-output (current-inexact-milliseconds)]
              [result (output unbound)]
              [before-end (current-inexact-milliseconds)])
@@ -211,7 +212,8 @@
         (printf "Loading slow CHECKs...~%")
         (load "checklib.scm")
         (set! loaded-checks 'slow))
-    (load file)
+    (printf "I would run ~a, but...~%" file)
+    ;;(load file)
     #;
     (parameterize ([read-accept-reader #t])
       (define expr (compile (with-input-from-file file read-syntax)))
@@ -297,7 +299,10 @@
 (define inline-output
   (lambda (file unbound tree)
     (let ([doit (lambda ()
-                  (for-each pretty-write (pexprs-with-checks tree)))])
+                  (for ([e (in-list (pexprs-with-checks tree))])
+                    (define b
+                      (with-output-to-bytes (λ () (pretty-print e))))
+                    (write-bytes (write-bytes (subbytes b 1)))))])
       (if (string? file)
           (begin
             (with-output-to-file file
@@ -375,4 +380,5 @@
                (check-output output-file unbound)])
           (void))))))
 
-(cf: "/home/ianj/projects/polymorphic-splitting/boyer.scm")
+;;(cf: "/home/ianj/papers/boyer.scm")
+(cf: "church.scm")

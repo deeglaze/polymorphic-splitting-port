@@ -26,11 +26,12 @@
 
     (define ordset
       (lambda vals
-        (for/fold ([s '()]) ([x (in-list vals)]) (ordset-add x s))))
+        (for/fold ([s '()])
+            ([x (in-list vals)])
+          (ordset-add x s))))
 
     (define ordset-add
       (lambda (x s0)
-        (unless (list? s0) (error 'ordset-add "Expected a list: ~a" s0))
         (let loop ([s s0]
                    [before '()])
           (cond [(or (null? s) (< x (car s)))
@@ -45,9 +46,8 @@
 
     (define ordset-exists?
       (lambda (p s)
-        (if (null? s)
-            #f
-            (or (p (car s)) (ordset-exists? p (cdr s))))))
+        (and (pair? s)
+             (or (p (car s)) (ordset-exists? p (cdr s))))))
 
     (define ordset-map
       (lambda (f s)

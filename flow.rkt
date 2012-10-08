@@ -72,9 +72,8 @@
     (define fresh-label
       (let ([label-counter (generate-counter 0)])
         (lambda (e)
-          (let ([l (label-counter)])
-            (set! labels (cons e labels))
-            l))))
+          (begin0 (label-counter)
+                  (set! labels (cons e labels))))))
     (define read-labels (list initial-contour (fresh-label #f) (fresh-label #f)))
     (define (prepare e recursive)
       ;; recursive is a list of names whose recursive definitions we are currently inside
@@ -89,55 +88,57 @@
            (set-E-labels! e (list (fresh-label e)))]
           [(E: (Var x))
            (note-variable! x)
-           (let ([l (fresh-label e)])
-             (set-E-labels! e
-                            (cons l (if (Name-primitive? x)
-                                        ;; Most primitives need one "result" label.
-                                        (cond [(memq x read-like-procedures)
-                                               read-labels]
-                                              [(or (Selector? (Name-primop x))
-                                                   (eq? x %internal-apply))
-                                               '()]
-                                              [(eq? x %Qmerge-list)
-                                               (list (fresh-label #f) (fresh-label #f))]
-                                              [else
-                                               (list (fresh-label #f))])
-                                        ;; For non-primitives, the second "label"
-                                        ;; marks whether this occurrence is recursive.
-                                        ;; This should be determined by the parser.
-                                        (list (and (Name-let-bound? x)
-                                                   (not (Name-mutated? x))
-                                                   (memq x recursive)))))))]
+           (define l (fresh-label e))
+           (define ls
+             (cond [(Name-primitive? x)
+                    ;; Most primitives need one "result" label.
+                    (cond [(memq x read-like-procedures)
+                           read-labels]
+                          [(or (Selector? (Name-primop x))
+                               (eq? x %internal-apply))
+                           '()]
+                          [(eq? x %Qmerge-list)
+                           (list (fresh-label #f) (fresh-label #f))]
+                          [else
+                           (list (fresh-label #f))])]
+                   [else
+                    ;; For non-primitives, the second "label"
+                    ;; marks whether this occurrence is recursive.
+                    ;; This should be determined by the parser.
+                    (list (and (Name-let-bound? x)
+                               (not (Name-mutated? x))
+                               (memq x recursive)))]))
+           (set-E-labels! e (cons l ls))]
           [(E: (Lam: x e1))
            (prep e1)
-           (for-each note-variable! x)
+           (for ([id (in-list x)]) (note-variable! id))
            (set-E-labels! e (list (fresh-label e)))]
           [(E: (Vlam: x rest e1))
            (prep e1)
-           (for-each note-variable! (cons rest x))
+           (for ([id (in-list (cons rest x))]) (note-variable! id))
            (set-E-labels! e (list (fresh-label e)))]
           [(E: (App e0 args))
            (prep e0)
-           (for-each prep args)
-           (let ([l (fresh-label e)])
-             (set-E-labels! e
-                            (cons l (mapLR
-                                     (lambda (_) (fresh-label #f))
-                                     `(#f #f ,@args)))))]
+           (for ([arg (in-list args)]) (prep arg))
+           (define l (fresh-label e))
+           (define ls
+             (for/list ([_ (in-list (list* #f #f args))])
+               (fresh-label #f)))
+           (set-E-labels! e (cons l ls))]
           [(E: (Let b e2))
-           (for-each prep b)
+           (for ([cl (in-list b)]) (prep cl))
            (prep e2)
            (set-E-labels! e (list (labelof e2)))]
           [(E: (Letr b e2))
            (mark-used-before-defined! b)
-           (for-each prep b)
+           (for ([cl (in-list b)]) (prep cl))
            (prep e2)
            (set-E-labels! e (list (labelof e2)))]
           [(E: (Begin exps))
-           (for-each prep exps)
+           (for ([e (in-list exps)]) (prep e))
            (set-E-labels! e (list (labelof (rac exps))))]
           [(E: (or (And exps) (Or exps)))
-           (for-each prep exps)
+           (for ([e (in-list exps)]) (prep e))
            (set-E-labels! e (list (fresh-label e)))]
           [(E: (If test then els))
            (prep test)
@@ -155,9 +156,9 @@
           [_ (error 'prep "Bad ~a" e)])))
         (set-variables! '())
         (prepare tree '())
-        (let* ([v (list->vector (reverse labels))])
-          (set-label->node! (lambda (l) (vector-ref v l)))
-          (set-n-labels! (vector-length v)))))
+        (define v (list->vector (reverse labels)))
+        (set-label->node! (lambda (l) (vector-ref v l)))
+        (set-n-labels! (vector-length v))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Abstract Evaluation.
@@ -181,89 +182,89 @@
 ;; exp x context x env -> point
 (define propagate
   (lambda (e k aenv)
+    (define l (labelof e))
     (match e
       [(E: (Const c))
-       (let* ([l (labelof e)]
-              [p (index-result-map l k)])
-         (p+aval p
-           (match c
-             [(? symbol?) (aval 'sym l)]
-             [#t          (aval 'true l)]
-             [#f          (aval 'false l)]
-             ['()         (aval 'nil l)]
-             [(? number?) (aval 'num l)]
-             [(? char?)   (aval 'char l)]
-             [(? string?) (aval 'str l)]
-             [(? void?)   (aval 'void l)]))
-         p)]
+       (define p (index-result-map l k))
+       (p+aval p
+               (match c
+                 [(? symbol?) (aval 'sym l)]
+                 [#t          (aval 'true l)]
+                 [#f          (aval 'false l)]
+                 ['()         (aval 'nil l)]
+                 [(? number?) (aval 'num l)]
+                 [(? char?)   (aval 'char l)]
+                 [(? string?) (aval 'str l)]
+                 [(? void?)   (aval 'void l)]))
+       p]
       [(E: (or (? Lam?) (? Vlam?)))
-       (let* ([l (labelof e)]
-              [p (index-result-map l k)]
-              [aenv (aenv-restrict aenv (free-in-exp e))])
-         (p+aval p (aval 'closure l (make-closure-contour k) aenv))
-         p)]
+       (define p (index-result-map l k))
+       (define frees (free-in-exp e))
+       (define aenv* (aenv-restrict aenv frees))
+       (p+aval p (aval 'closure l (make-closure-contour k) aenv*))
+       p]
       [(E: (Var x))
-       (let* ([l (labelof e)])
-         (cond [(Name-primitive? x)
-                (let ([p (index-result-map l k)])
-                  (p+aval p (aval 'prim l))
-                  p)]
-               [(Name-unbound? x)
-                (let ([p (index-result-map l k)])
-                  (p+aval p (aval 'unbound 0))
-                  p)]
-               [(and (Name-let-bound? x) (not (Name-mutated? x)))
-                (let ([let-label (labelof (Name-binding x))]
-                      [recursive? (recursive-var? e)]
-                      [component (or (Name-component x) (list x))])
-                  (var-split x aenv l k let-label recursive? component))]
-               [else
-                (result-map= l k (index-var-map x (aenv-lookup aenv x)))
-                (index-result-map l k)]))]
+       (cond [(Name-primitive? x)
+              (define p (index-result-map l k))
+              (p+aval p (aval 'prim l))
+              p]
+             [(Name-unbound? x)
+              (define p (index-result-map l k))
+              (p+aval p (aval 'unbound 0))
+              p]
+             [(and (Name-let-bound? x) (not (Name-mutated? x)))
+              (define let-label (labelof (Name-binding x)))
+              (define recursive? (recursive-var? e))
+              (define component (or (Name-component x) (list x)))
+              (var-split x aenv l k let-label recursive? component)]
+             [else
+              (result-map= l k (index-var-map x (aenv-lookup aenv x)))
+              (index-result-map l k)])]
       [(E: (App e0 args))
-       (let ([l (labelof e)])
-         (let loop ([a* args])
-           (if (pair? a*)
-               (p->1 (propagate (car a*) k aenv)
-                     (lambda () (loop (cdr a*))))
-               (p-> (propagate e0 k aenv)
-                    (make-ap-action
-                      l
-                      k
-                      (make-ap-get-args args k (cdr (extra-labels e)))))))
-         (index-result-map l k))]
+       (let loop ([a* args])
+         (if (pair? a*)
+             (p->1 (propagate (car a*) k aenv)
+                   (lambda () (loop (cdr a*))))
+             ;; call e0 functions with args' labels
+             (p-> (propagate e0 k aenv)
+                  (make-ap-action
+                   l
+                   k
+                   (make-ap-get-args args k (cdr (extra-labels e)))))))
+       (index-result-map l k)]
       [(E: (or (Let b e2) (Letr b e2)))
-       (let* ([new-aenv (for/fold ([env aenv])
-                            ([cl (in-list b)]
-                             #:when (Define? cl))
-                          (aenv-extend env (Define-name cl) k))]
-              [make-new-k (lambda (eb)
-                            (make-context
-                              (let-binding-contour (context->contour k) (labelof eb))
-                              new-aenv))])
-         (let loop ([b b])
-           (match b
-             [(cons (Define x eb) rest)
-              (when (Name-used-before-defined? x)
-                (p+aval (index-var-map x k) (aval 'unspecified 0)))
-              (let ([p (index-var-map x k)])
-                (p->p (propagate eb (make-new-k eb) new-aenv) p)
-                (p->1 p (lambda () (loop rest))))]
-             [(cons (? E? eb) rest)
-              (p->1 (propagate eb (make-new-k eb) new-aenv)
-                    (lambda () (loop rest)))]
-             [(cons _ rest)
-              (loop rest)]
-             ['()
-              (propagate e2 k new-aenv)]
-             [_ (error 'flow "Bad clause in let ~a" b)])))
-       (index-result-map (labelof e) k)]
+       (define new-aenv
+         (for/fold ([env aenv])
+             ([cl (in-list b)]
+              #:when (Define? cl))
+           (aenv-extend env (Define-name cl) k)))
+       (define (make-new-k eb)
+         (make-context
+          (let-binding-contour (context->contour k) (labelof eb))
+          new-aenv))
+       (let loop ([b b])
+         (match b
+           [(cons (Define x eb) rest)
+            (when (Name-used-before-defined? x)
+              (p+aval (index-var-map x k) (aval 'unspecified 0)))
+            (let ([p (index-var-map x k)])
+              (p->p (propagate eb (make-new-k eb) new-aenv) p)
+              (p->1 p (lambda () (loop rest))))]
+           [(cons (? E? eb) rest)
+            (p->1 (propagate eb (make-new-k eb) new-aenv)
+                  (lambda () (loop rest)))]
+           [(cons _ rest)
+            (loop rest)]
+           ['()
+            (propagate e2 k new-aenv)]
+           [_ (error 'flow "Bad clause in let ~a" b)]))
+       (index-result-map l k)]
       [(E: (Begin exps))
        (let eloop ([exps exps])
          (when (pair? exps)
            (p->1 (propagate (car exps) k aenv)
                  (lambda () (eloop (cdr exps))))))
-       (index-result-map (labelof e) k)]
+       (index-result-map l k)]
       [(E: (If test then els))
        (match-let* ([tst (propagate test k aenv)]
                     [(list then-lbl else-lbl) (extra-labels e)]
@@ -271,7 +272,7 @@
                      (if If-split
                          (split-if test k aenv aenv then-lbl else-lbl)
                          (cons aenv aenv))]
-                    [p (index-result-map (labelof e) k)])
+                    [p (index-result-map l k)])
          (p-> tst
               (let ([first #t])
                 (lambda (new)
@@ -289,13 +290,11 @@
        (let ([p1 (propagate body k aenv)])
          (unless (Name-unbound? x)
            (p->p p1 (index-var-map x (aenv-lookup aenv x)))))
-       (let* ([l (labelof e)]
-              [p (index-result-map l k)])
+       (let* ([p (index-result-map l k)])
          (p+aval p (aval 'void l))
          p)]
       [(E: (And exps))
-       (let* ([l (labelof e)]
-              [p (index-result-map l k)])
+       (let* ([p (index-result-map l k)])
          (if (null? exps)
              (p+aval p (aval 'true l))
              (let loop ([exps exps])
@@ -310,8 +309,7 @@
                    (p->p (propagate (car exps) k aenv) p))))
          p)]
       [(E: (Or exps))
-       (let* ([l (labelof e)]
-              [p (index-result-map l k)])
+       (let* ([p (index-result-map l k)])
          (if (null? exps)
              (p+aval p (aval 'false l))
              (let loop ([exps exps])
@@ -326,8 +324,7 @@
                    (p->p (propagate (car exps) k aenv) p))))
          p)]
       [(E: (Letcc x e1))
-       (let* ([l (labelof e)]
-              [p (index-result-map l k)]
+       (let* ([p (index-result-map l k)]
               [aenv (aenv-extend aenv x k)])
          (p+aval (index-var-map x k) (aval 'cont l k))
          (p->p (propagate e1 k aenv) p)
@@ -350,213 +347,202 @@
            (lambda (new)
              (intset-for-each
                (lambda (v)
-                 (let ([type (aval-type v)])
-                   (unless (assoc type (unbox contour-map))
-                     ;; For a new type of arg, compute new contours,
-                     ;; record them, evaluate function body in new
-                     ;; contours, and add typed edges for all args
-                     ;; and all appropriate types to formals.
-                     (let* ([arg-types
-                             (map (lambda (z)
-                                    (if (eq? z contour-map)
-                                        (list type)
-                                        (map car (unbox z))))
-                                  contour-maps)]
-                            [new-contours
-                             (make-type-based-contours
-                               arg-types
-                               current-contour)])
-                       (set-box! contour-map
-                         (cons (cons type new-contours) (unbox contour-map)))
-                       (for-each
-                         (lambda (c)
-                           (eval-body c)
-                           (for-each
-                             (lambda (formal arg types)
-                               (for-each
-                                 (lambda (type)
-                                   (typed-p-> type arg (index-var-map formal c)))
-                                 types))
-                             formals
-                             args
-                             arg-types))
-                         new-contours)))))
+                 (define type (aval-type v))
+                 (unless (assoc type (unbox contour-map))
+                   ;; For a new type of arg, compute new contours,
+                   ;; record them, evaluate function body in new
+                   ;; contours, and add typed edges for all args
+                   ;; and all appropriate types to formals.
+                   (define arg-types
+                     (for/list ([z (in-list contour-maps)])
+                       (if (eq? z contour-map)
+                           (list type)
+                           (map car (unbox z)))))
+                   (define new-contours
+                     (make-type-based-contours
+                      arg-types
+                      current-contour))
+                   (set-box! contour-map
+                             (cons (cons type new-contours) (unbox contour-map)))
+                   (for ([c (in-list new-contours)])
+                     (eval-body c)
+                     (for ([formal (in-list formals)]
+                           [arg (in-list args)]
+                           [types (in-list arg-types)])
+                       (typed-p-> type arg (index-var-map formal c))))))
                new))))))
 
 (define make-ap-action
   (lambda (l k get-args)
-    (let ([p (index-result-map l k)])
-      (lambda (fns)
-        (intset-for-each
-          (lambda (new)
-            (let ([l-closure (aval-label new)])
-              (case (aval-kind new)
-                [(closure)
-                 (extend-call-map! l-closure l)
-                 (let* ([aenv2 (aval-env new)]
-                        [c (call-site-contour l k (aval-contour new))]
-                        [action (lambda (x arg* eval-body)
-                                  (if (and Type (< (contour-length c) Type))
-                                      (if (null? x)
-                                          (eval-body c)
-                                          (let* ([contour-maps (map (lambda (_) (box '())) x)]
-                                                 [arg-successor (make-typed-arg-successor
-                                                                  contour-maps
-                                                                  x
-                                                                  arg*
-                                                                  c
-                                                                  eval-body)])
-                                            (for-each
-                                              arg-successor
-                                              arg*
-                                              contour-maps)))
-                                      (let ([arg-successor
-                                             (lambda (arg y)
-                                               (p->p arg (index-var-map y c)))])
-                                        (for-each
-                                          arg-successor
-                                          arg*
-                                          x)
-                                        (eval-body c))))])
-                   (match (label->node l-closure)
-                     [(E: (Lam: x e2))
-                      (match (get-args (length x) #f #f)
-                        [#f #f]
-                        [(cons arg* _)
-                         (let ([eval-body
-                                (lambda (c)
-                                  (let ([new-aenv (aenv-extend* aenv2 x (map (lambda (_) c) x))]
-                                        [new-context (make-context c aenv2)])
-                                    (memo-propagate e2 new-context new-aenv)
-                                    (p->p (index-result-map (labelof e2) new-context) p)))])
-                           (action x arg* eval-body))])]
-                     [(E: (Vlam: x rest e2))
-                      (match (get-args (length x) #f #t)
-                        [#f #f]
-                        [(cons arg* arg-rest)
-                         (let ([eval-body
-                                (lambda (c)
-                                  (p->p arg-rest (index-var-map rest c))
-                                  (let* ([vars (cons rest x)]
-                                         [new-aenv (aenv-extend* aenv2 vars (map (lambda (_) c) vars))]
-                                         [new-context (make-context c aenv2)])
-                                    (memo-propagate e2 new-context new-aenv)
-                                    (p->p (index-result-map (labelof e2) new-context) p)))])
-                           (action x arg* eval-body))])]))]
-                [(unbound)
-                 (p+aval p (aval 'unbound 0))]
-                [(cont)
-                 (extend-call-map! l-closure l)
-                 (let ([k2 (aval-contour new)])
-                   (match (label->node l-closure)
-                     [(and e2 (E: (? Letcc?)))
-                      (match (get-args 1 #f #f)
-                        [#f #f]
-                        [`((,arg) . ,_)
-                         (let ([l2 (labelof e2)])
-                           (p->p arg (index-result-map l2 k2)))])]))]
-                [(prim)
-                 (extend-call-map! l-closure l)
-                 (match (label->node l-closure)
-                   [(and e2 (E: (Var x)))
-                    (for-each
-                      (lambda (arity)
-                        (match (if (negative? arity)
-                                   (get-args (- (- arity) 1) #t #f)
-                                   (get-args arity #f #f))
-                          [#f #f]
-                          [`(,arg* . ,arg-rest)
-                           (cond
-                             [(eq? %internal-apply x)
-                              (let* ([f (car arg*)]
-                                     [args-list (cadr arg*)]
-                                     [get-args (make-apply-get-args args-list)])
-                                (p-> f (make-ap-action l k get-args)))]
-                             [(or (eq? %vector x) (eq? %Qvector x))
-                              (let* ([l-result (car (extra-labels e2))]
-                                     [p-result (index-result-map l-result k)])
-                                (for-each
-                                  (lambda (arg) (p->p arg p-result))
-                                  arg*)
-                                (when arg-rest
-                                  (p->p arg-rest p-result))
-                                (when (zero? (length arg*))
-                                  (p+aval p (aval 'vec0 l-result)))
-                                (p+aval p (aval 'vec l-result k p-result)))]
-                             [(eq? %make-vector x)
-                              (let* ([l-result (car (extra-labels e2))]
-                                     [p-result (index-result-map l-result k)])
-                                (if (= 2 arity)
-                                    (p->p (cadr arg*) p-result)
-                                    (p+aval p-result (aval 'unspecified 0)))
-                                (p+aval p (aval 'vec0 l-result))
-                                (p+aval p (aval 'vec l-result k p-result)))]
-                             [(memq x read-like-procedures)
-                              (match (extra-labels e2)
-                                [(list k l3 l4)
-                                 (p->p (memo-make-read-result k l3 l4) p)])]
-                             [(eq? %Qlist x)
-                              (let ([l3 (car (extra-labels e2))])
-                                (p->p (memo-make-recursive-list l3 k arg*) p))]
-                             [(eq? %Qmerge-list x)
-                              (let* ([l-result (car (extra-labels e2))]
-                                     [lm (cadr (extra-labels e2))]
-                                     [pm (index-result-map lm k)])
-                                (for-each
-                                  (lambda (arg) (p->p arg pm))
-                                  arg*)
-                                (p->p (memo-make-recursive-list l-result k (list pm)) p))]
-                             [else
-                              (match (Name-primop x)
-                                [(Constructor tag)
-                                 (let ([l3 (car (extra-labels e2))])
-                                   (p+aval p
-                                     (apply aval
-                                       tag
-                                       l ;;; TEMP l3 -> l
-                                       k
-                                       arg*)))]
-                                [(Selector tag idx)
-                                 (p-> (car arg*)
-                                      (lambda (new)
-                                        (intset-for-each
-                                          (lambda (v)
-                                            (when (eq? tag (aval-kind v))
-                                              (p->p (list-ref (aval-fields v) idx)
-                                                    p)))
-                                          new)))]
-                                [(Mutator tag idx val)
-                                 (let ([l3 (car (extra-labels e2))])
-                                   (p-> (car arg*)
-                                        (lambda (new)
-                                          (intset-for-each
-                                            (lambda (v)
-                                              (when (eq? tag (aval-kind v))
-                                                (p->p (list-ref arg* val)
-                                                      (list-ref (aval-fields v) idx))))
-                                            new)))
-                                   (p+aval p (aval 'void l3)))]
-                                [(Predicate tags)
-                                 (let ([l3 (car (extra-labels e2))])
-                                   (p-> (car arg*)
-                                        (lambda (new)
-                                          (intset-for-each
-                                            (lambda (v)
-                                              (when (memq (aval-kind v)
-                                                          `(unspecified unbound ,@tags))
-                                                (p+aval p (aval 'true l3)))
-                                              (unless (memq (aval-kind v) tags)
-                                                (p+aval p (aval 'false l3))))
-                                            new))))]
-                                [_
-                                 (let ([l3 (car (extra-labels e2))])
-                                   (p+avals
-                                     p
-                                     (list->avals
-                                       (map (lambda (c) (aval c l))  ;;; TEMP l3 -> l
-                                            (Primitive-result-type (Name-binder x))))))])])]))
-                      (Primitive-arity (Name-binder x)))])])))
-          fns)))))
+    (define p (index-result-map l k))
+    (lambda (fns)
+      (intset-for-each
+       (lambda (new)
+         (define l-closure (aval-label new))
+         (case (aval-kind new)
+           [(closure)
+            (extend-call-map! l-closure l)
+            (define aenv2 (aval-env new))
+            (define c (call-site-contour l k (aval-contour new)))
+            (define (action x arg* eval-body)
+              (cond
+               [(and Type (< (contour-length c) Type))
+                (cond [(null? x) (eval-body c)]
+                      [else
+                       (define contour-maps (map (lambda (_) (box '())) x))
+                       (define arg-successor
+                         (make-typed-arg-successor
+                          contour-maps
+                          x
+                          arg*
+                          c
+                          eval-body))
+                       (for ([arg (in-list arg*)]
+                             [contour (in-list contour-maps)])
+                         (arg-successor arg contour))])]
+               [else
+                (for ([arg (in-list arg*)]
+                      [contour (in-list x)])
+                  (p->p arg (index-var-map contour c)))
+                (eval-body c)]))
+            (define node (label->node l-closure))
+            (match node
+              [(E: (Lam: x e2))
+               (match (get-args (length x) #f #f)
+                 [#f #f]
+                 [(cons arg* _)
+                  (define (eval-body c)
+                    (define new-aenv
+                      (aenv-extend* aenv2 x (map (lambda (_) c) x)))
+                    (define new-context (make-context c aenv2))
+                    (memo-propagate e2 new-context new-aenv)
+                    (p->p (index-result-map (labelof e2) new-context) p))
+                  (action x arg* eval-body)])]
+              [(E: (Vlam: x rest e2))
+               (match (get-args (length x) #f #t)
+                 [#f #f]
+                 [(cons arg* arg-rest)
+                  (define (eval-body c)
+                    (p->p arg-rest (index-var-map rest c))
+                    (let* ([vars (cons rest x)]
+                           [new-aenv (aenv-extend* aenv2 vars (map (lambda (_) c) vars))]
+                           [new-context (make-context c aenv2)])
+                      (memo-propagate e2 new-context new-aenv)
+                      (p->p (index-result-map (labelof e2) new-context) p)))
+                  (action x arg* eval-body)])])]
+           [(unbound)
+            (p+aval p (aval 'unbound 0))]
+           [(cont)
+            (extend-call-map! l-closure l)
+            (let ([k2 (aval-contour new)])
+              (match (label->node l-closure)
+                [(and e2 (E: (? Letcc?)))
+                 (match (get-args 1 #f #f)
+                   [#f #f]
+                   [`((,arg) . ,_)
+                    (p->p arg (index-result-map (labelof e2) k2))])]))]
+           [(prim)
+            (extend-call-map! l-closure l)
+            (match (label->node l-closure)
+              [(and e2 (E: (Var x)))
+               (for-each
+                (lambda (arity)
+                  (match (if (negative? arity)
+                             (get-args (- (- arity) 1) #t #f)
+                             (get-args arity #f #f))
+                    [#f #f]
+                    [`(,arg* . ,arg-rest)
+                     (cond
+                      [(eq? %internal-apply x)
+                       (let* ([f (car arg*)]
+                              [args-list (cadr arg*)]
+                              [get-args (make-apply-get-args args-list)])
+                         (p-> f (make-ap-action l k get-args)))]
+                      [(or (eq? %vector x) (eq? %Qvector x))
+                       (let* ([l-result (car (extra-labels e2))]
+                              [p-result (index-result-map l-result k)])
+                         (for-each
+                          (lambda (arg) (p->p arg p-result))
+                          arg*)
+                         (when arg-rest
+                           (p->p arg-rest p-result))
+                         (when (zero? (length arg*))
+                           (p+aval p (aval 'vec0 l-result)))
+                         (p+aval p (aval 'vec l-result k p-result)))]
+                      [(eq? %make-vector x)
+                       (let* ([l-result (car (extra-labels e2))]
+                              [p-result (index-result-map l-result k)])
+                         (if (= 2 arity)
+                             (p->p (cadr arg*) p-result)
+                             (p+aval p-result (aval 'unspecified 0)))
+                         (p+aval p (aval 'vec0 l-result))
+                         (p+aval p (aval 'vec l-result k p-result)))]
+                      [(memq x read-like-procedures)
+                       (match (extra-labels e2)
+                         [(list k l3 l4)
+                          (p->p (memo-make-read-result k l3 l4) p)])]
+                      [(eq? %Qlist x)
+                       (let ([l3 (car (extra-labels e2))])
+                         (p->p (memo-make-recursive-list l3 k arg*) p))]
+                      [(eq? %Qmerge-list x)
+                       (let* ([l-result (car (extra-labels e2))]
+                              [lm (cadr (extra-labels e2))]
+                              [pm (index-result-map lm k)])
+                         (for-each
+                          (lambda (arg) (p->p arg pm))
+                          arg*)
+                         (p->p (memo-make-recursive-list l-result k (list pm)) p))]
+                      [else
+                       (match (Name-primop x)
+                         [(Constructor tag)
+                          (let ([l3 (car (extra-labels e2))])
+                            (p+aval p
+                                    (apply aval
+                                           tag
+                                           l ;;; TEMP l3 -> l
+                                           k
+                                           arg*)))]
+                         [(Selector tag idx)
+                          (p-> (car arg*)
+                               (lambda (new)
+                                 (intset-for-each
+                                  (lambda (v)
+                                    (when (eq? tag (aval-kind v))
+                                      (p->p (list-ref (aval-fields v) idx)
+                                            p)))
+                                  new)))]
+                         [(Mutator tag idx val)
+                          (let ([l3 (car (extra-labels e2))])
+                            (p-> (car arg*)
+                                 (lambda (new)
+                                   (intset-for-each
+                                    (lambda (v)
+                                      (when (eq? tag (aval-kind v))
+                                        (p->p (list-ref arg* val)
+                                              (list-ref (aval-fields v) idx))))
+                                    new)))
+                            (p+aval p (aval 'void l3)))]
+                         [(Predicate tags)
+                          (let ([l3 (car (extra-labels e2))])
+                            (p-> (car arg*)
+                                 (lambda (new)
+                                   (intset-for-each
+                                    (lambda (v)
+                                      (when (memq (aval-kind v)
+                                                  `(unspecified unbound ,@tags))
+                                        (p+aval p (aval 'true l3)))
+                                      (unless (memq (aval-kind v) tags)
+                                        (p+aval p (aval 'false l3))))
+                                    new))))]
+                         [_
+                          (let ([l3 (car (extra-labels e2))])
+                            (p+avals
+                             p
+                             (list->avals
+                              (map (lambda (c) (aval c l)) ;;; TEMP l3 -> l
+                                   (Primitive-result-type (Name-binder x))))))])])]))
+                (Primitive-arity (Name-binder x)))])]))
+       fns))))
 
 ;; Build a get-args closure for an ordinary application.  A get-args
 ;; closure takes three args: n, or-more?, and rest?.  n is the
@@ -621,22 +607,22 @@
 (define memo-make-read-result #f)
 (define make-read-result
   (lambda (k l1 l2)
-    (let* ([p (index-result-map l1 k)]
-           [p2 (index-result-map l2 k)]
-           [vals (list
-                   (aval 'nil l1)
-                   (aval 'sym l1)
-                   (aval 'true l1)
-                   (aval 'false l1)
-                   (aval 'num l1)
-                   (aval 'char l1)
-                   (aval 'str l1)
-                   (aval 'cons l1 k p2 p2)
-                   (aval 'vec0 l1)
-                   (aval 'vec l1 k p2))])
-      (p+avals p2 (list->avals vals))
-      (p+avals p (list->avals (cons (aval 'eof l1) vals)))
-      p)))
+    (define p (index-result-map l1 k))
+    (define p2 (index-result-map l2 k))
+    (define vals (list
+                  (aval 'nil l1)
+                  (aval 'sym l1)
+                  (aval 'true l1)
+                  (aval 'false l1)
+                  (aval 'num l1)
+                  (aval 'char l1)
+                  (aval 'str l1)
+                  (aval 'cons l1 k p2 p2)
+                  (aval 'vec0 l1)
+                  (aval 'vec l1 k p2)))
+    (p+avals p2 (list->avals vals))
+    (p+avals p (list->avals (cons (aval 'eof l1) vals)))
+    p))
 
 (define memo-make-recursive-list #f)
 (define make-recursive-list

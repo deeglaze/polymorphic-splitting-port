@@ -305,52 +305,47 @@
   (lambda (a b)
     (if (null? b)
         a
-        (foldr (lambda (x b)
-                 (if (memq x b)
-                     b
-                     (cons x b)))
-          b
-          a))))
+        (for/fold ([acc b]) ([x (in-list a)]
+                             #:unless (memq x acc))
+          (cons x acc)))))
 
 ;; unite any number of sets
 (define union
   (lambda l
-    (foldl union2 '() l)))
+    (for/fold ([set '()]) ([s (in-list l)])
+      (union2 s set))))
 
 ;; take set b from set a
 (define setdiff2
   (lambda (a b)
     (if (null? b)
         a
-        (foldl (lambda (c x)
-                 (if (memq x b)
-                     c
-                     (cons x c)))
-          '()
-          a))))
+        (for/fold ([c '()]) ([x (in-list a)]
+                             #:unless (memq x b))
+          (cons x c)))))
 
 ;; take 2nd and other sets from first set
 (define setdiff
   (lambda l
     (if (null? l)
         '()
-        (setdiff2 (car l) (foldl union2 '() (cdr l))))))
+        (setdiff2 (car l)
+                  (for/fold ([c '()]) ([x (in-list (cdr l))])
+                    (union2 x c))))))
 
 ;; intersect two sets
 (define intersect2
   (lambda (a b)
     (if (null? b)
         '()
-        (foldl (lambda (c x)
-                 (if (memq x b)
-                     (cons x c)
-                     c))
-          '()
-          a))))
+        (for/fold ([c '()]) ([x (in-list a)]
+                             #:when (memq x b))
+          (cons x c)))))
 
 ;; intersect several sets
 (define intersect
   (lambda l
     (if (null? l)
         '()
-        (foldl intersect2 (car l) l))))
+        (for/fold ([acc (car l)]) ([s (in-list l)])
+          (intersect2 s acc)))))

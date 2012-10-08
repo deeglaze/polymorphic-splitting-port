@@ -3,6 +3,7 @@
 (require "library.rkt"
          "data.rkt"
          "env.rkt"
+         "r4rsprim.rkt"
          "components.rkt"
          "free.rkt"
          "check.rkt"
@@ -100,15 +101,7 @@
           (cond [(null? defs) body]
                 [else (make-E (Letr defs body))]))))))
 
-;; We don't have a r4rs macro expander, so hard-code what's necessary.
-(define hack-expand
-  (match-lambda
-   [`(recur ,name ([,id ,e] ...) ,body ...)
-    `(letrec ([,name (lambda ,id ,@body)])
-       (,name ,@e))]
-   [`(match ,args) (error 'hack-expand "Uh oh (match ~a)" args)]
-   [_ #f]))
-     
+
 
 ;; returns list of x's, list of names, env -> list of Defines, list of unparsed exps
 (define try-parse-def
@@ -118,12 +111,10 @@
        (match (lookup? env fun)
          [(Keyword #f _) (list '() '() (lambda _ '()) (list x))]
          [(Keyword f _) (f x env context)]
-         [(Macro f) (try-parse-def (f x env context) env context)]         
-         [_ 
-          (match (and (not (lookup? basic-env fun))
-                      (hack-expand x))
-            [#f (list '() '() (lambda _ '()) (list x))]
-            [x2 (try-parse-def x2 env context)])])]
+         [(Macro f) (try-parse-def (f x env context) env context)]
+         [_ (cond [(lookup? basic-env fun)
+                   (error 'try-parse-def "(rebound?) Unsupported form: ~a" x)]
+                  [else (list '() '() (lambda _ '()) (list x))])])]
       [_ (list '() '() (lambda _ '()) (list x))])))
 
 ;; returns list of x's, list of names, env -> list of Defines, list of unparsed exps
@@ -288,17 +279,17 @@
       [(? string?)             (make-E (Const x))]
       [(? symbol?)             (make-E (Var (parse-name x env context)))]
       [(cons fun args)
-       (if (symbol? fun)
+       (if (symbol? fun) ;; user-bound function call, macro or primitive call
            (match (lookup? env fun)
              [(Keyword _ #f) (syntax-err context #f "invalid context for ~a" x)]
              [(Keyword _ f) (f x env context)]
              [(Macro f) (parse-exp (f x env context) env context)]
-             [_ (match (and (not (lookup? basic-env fun))
-                            (hack-expand x))
-                  [#f (parse-app x env context)]
-                  [x2 (parse-exp x2 env context)])])
+             [(? Name? n) (parse-app x env context)]
+             [else (cond [(lookup? basic-env fun)
+                          (parse-app x env context)]
+                         [else (error 'parse-exp "Unsupported form: ~a (~a)" x else)])])
            (parse-app x env context))]
-      [_ (syntax-err context x "")])))
+      [_ (syntax-err context x "parse-exp")])))
 
 (define parse-app
   (lambda (x env context)
@@ -307,7 +298,7 @@
        (make-E (App
          (parse-exp fun env context)
          (map (lambda (x) (parse-exp x env context)) args)))]
-      [_ (syntax-err context x "")])))
+      [_ (syntax-err context x "parse-app")])))
 
 (define parse-lambda
   (lambda (x env context)
@@ -332,14 +323,14 @@
                    [body (parse-body body new-env context)]
                    [e (make-E (Lam (reverse names) body))])
               (ensure-no-repeats vars context)
-              (for-each
-                (lambda (n) (set-Name-binder! n e))
-                names)
+              (for ([n (in-list names)])
+                ;; Each variable points to which binding form binds it
+                (set-Name-binder! n e))
               e)]
            [(cons (? symbol? n) x)
             (loop x (cons n vars))]
            [_ (syntax-err context x "in lambda expression")]))]
-      [_ (syntax-err context x "")])))
+      [_ (syntax-err context x "parse-lambda")])))
 
 (define parse-if
   (lambda (x env context)
@@ -362,7 +353,7 @@
                  (parse-exp test env context)
                  (parse-exp then env context)
                  (parse-exp '(void) env context)))]
-      [_ (syntax-err context x "")])))
+      [_ (syntax-err context x "parse-if")])))
 
 (define parse-set!
   (lambda (x env context)
@@ -372,21 +363,21 @@
          (when (Name-primitive? n)
            (syntax-err context x "cannot set! primitive"))
          (make-E (Set! n (parse-exp exp env context))))]
-      [_ (syntax-err context x "")])))
+      [_ (syntax-err context x "parse-set!")])))
 
 (define parse-and
   (lambda (x env context)
     (match x
       [(cons _ exps)
        (make-E (And (map (lambda (x) (parse-exp x env context)) exps)))]
-      [_ (syntax-err context x "")])))
+      [_ (syntax-err context x "parse-and")])))
 
 (define parse-or
   (lambda (x env context)
     (match x
       [(cons _ exps)
        (make-E (Or (map (lambda (x) (parse-exp x env context)) exps)))]
-      [_ (syntax-err context x "")])))
+      [_ (syntax-err context x "parse-or")])))
 
 (define parse-let
   (lambda (x env context)
@@ -408,7 +399,7 @@
                              exps)]
               [e (make-E (Let bindings (parse-body body new-env context)))])
          e)]
-      [_ (syntax-err context x "")])))
+      [_ (syntax-err context x "parse-let")])))
 
 (define parse-letrec
   (lambda (x env context)
@@ -425,7 +416,7 @@
               [e (make-E (Letr bindings (parse-body body new-env context)))])
          (make-components! bindings)
          e)]
-      [_ (syntax-err context x "")])))
+      [_ (syntax-err context x "parse-letrec")])))
 
 (define parse-letcc
   (lambda (x env context)
@@ -439,7 +430,7 @@
                                      (map (lambda (x) (parse-exp x new-env context)) exps)))))])
          (set-Name-binder! name e)
          e)]
-      [_ (syntax-err context x "")])))
+      [_ (syntax-err context x "parse-letcc")])))
 
 (define parse-begin-exp
   (lambda (x env context)
@@ -448,13 +439,13 @@
        (parse-exp exp env context)]
       [(list _ exps __1)
        (make-E (Begin (map (lambda (x) (parse-exp x env context)) exps)))]
-      [_ (syntax-err context x "")])))
+      [_ (syntax-err context x "parse-begin-exp")])))
 
 (define parse-quote-symbol
   (lambda (x env context)
     (match x
       [(list _ (? symbol? s)) (make-E (Const s))]
-      [_ (syntax-err context x "")])))
+      [_ (syntax-err context x "parse-quote-symbol")])))
 
 (define parse-n-primitive
   (lambda (x env context)
@@ -466,9 +457,9 @@
          [(Macro f) (parse-exp (f (cdr x) env context) env context)]
          [(? Name?) (if (null? args)
                         (parse-exp s r4rs-env context)
-                        (syntax-err context x ""))]
+                        (syntax-err context x "n-primitive args"))]
          [_ (syntax-err context #f "~a is not a primitive" s)])]
-      [_ (syntax-err context x "")])))
+      [_ (syntax-err context x "parse-n-primitive")])))
 
 (define parse-n-special
   (lambda (x env context)
@@ -480,19 +471,19 @@
          [(Macro f) (parse-exp (f (cdr x) env context) env context)]
          [(? Name?) (if (null? args)
                         (parse-exp s special-env context)
-                        (syntax-err context x ""))]
+                        (syntax-err context x "parse-n-special args"))]
          [_ (syntax-err context #f "~a is not a special" s)])]
-      [_ (syntax-err context x "")])))
+      [_ (syntax-err context x "parse-n-special")])))
 
 (define parse-name
   (lambda (x env context)
     (match (lookup? env x)
       [(? Keyword?) (syntax-err context #f "invalid use of keyword ~a" x)]
       [(? Macro?) (syntax-err context #f "invalid use of macro ~a" x)]
-      [#f (let ([n (make-Name x context)])
-            (printf "Warning: ~a (~a) is unbound~%" (pname* n) x)
-            (note-unbound! n)
-            n)]
+      [#f (define n (make-Name x context))
+          (printf "Warning: ~a (~a) is unbound~%" (pname* n) x)
+          (note-unbound! n)
+          n]
       [n n])))
 
 (define note-unbound!
@@ -524,6 +515,8 @@
         (case . ,(Macro case-tf))
         (do . ,(Macro do-tf))
         (delay . ,(Macro delay-tf))
+        (recur . ,(Macro recur-tf))
+        ;; Keywords
         (lambda . ,(Keyword #f parse-lambda))
         (if . ,(Keyword #f parse-if))
         (set! . ,(Keyword #f parse-set!))
@@ -536,6 +529,6 @@
         (define . ,(Keyword parse-define #f))
         (defstruct . ,(Keyword parse-defstruct #f))
         (defmacro . ,(Keyword parse-defmacro #f))
-        (,(string->symbol "#primitive") . ,(Keyword parse-n-primitive-as-def parse-n-primitive))
-        (,(string->symbol "#special") . ,(Keyword parse-n-special-as-def parse-n-special))))
+        (,primitive . ,(Keyword parse-n-primitive-as-def parse-n-primitive))
+        (,special . ,(Keyword parse-n-special-as-def parse-n-special))))
     quote-env)))

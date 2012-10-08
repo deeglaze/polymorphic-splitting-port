@@ -3,9 +3,11 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Transform functions for essential macros.
 
-(require "data.rkt")
+(require "data.rkt"
+         "mutrec.rkt")
 (provide let*-tf cond-tf case-tf delay-tf
          cons-limit quote-tf quasiquote-tf do-tf
+         recur-tf
          special primitive syntax-err
          set-cons-limit!)
 
@@ -16,15 +18,14 @@
   (lambda (context expr format . args)
     (newline)
     #;(when expr (limited-pretty-print expr 4))
-    (apply error #f
+    (apply error 'syntax
       (string-append "Syntax Error~a~a"
         (if (zero? (string-length format))
             ""
             ": ")
         format)
       (if (empty-context? context) "" " ")
-      (if (empty-context? context) "" "pcontext unsupported" #;(pcontext context)
-          )
+      (if (empty-context? context) "" (pcontext context))
       args)))
 
 ;(export (cons-limit
@@ -57,6 +58,14 @@
         [`((,test . ,body) . ,rest)
          `(,primitive if ,test (,primitive begin ,@body) ,(loop rest))]
         [_ (syntax-err context cond-expr "invalid cond expression")]))))
+
+(define recur-tf
+  (lambda (rec-expr env context)
+    (match rec-expr
+      [`(recur ,name ([,id ,e] ...) ,body ...)
+       `(letrec ([,name (lambda ,id ,@body)])
+          (,name ,@e))]
+      [_ (syntax-err context rec-expr "invalid recur expression")])))
 
 (define case-tf
   (lambda (case-expr env context)

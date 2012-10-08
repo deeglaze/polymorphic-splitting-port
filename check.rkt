@@ -93,7 +93,10 @@
     (let ([doit (lambda ()
                   (match-let ([(cons defs n-checks) (check-summary unbound)])
                     (for ([def (in-list defs)])
-                      (printf "~a~%~%" def))
+                      (define b
+                        (with-output-to-bytes (λ () (pretty-print def))))
+                      ;; remove the first '
+                      (write-bytes (subbytes b 1)))
                     n-checks))])
       (if (string? file)
           (begin

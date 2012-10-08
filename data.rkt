@@ -65,7 +65,7 @@
 (struct Begin (exps) #:prefab)
 (struct Const (val) #:prefab)
 (struct If (test then else) #:prefab)
-(struct Lam (names exp [free #:auto #:mutable]) #:prefab)
+(struct Lam (names exp [free #:auto #:mutable]) #:prefab #:auto-value #f)
 (struct Let (bindings exp) #:prefab)
 (struct Clet (names bindings exp) #:prefab)
 
@@ -73,7 +73,7 @@
 (struct Or (exps) #:prefab)
 (struct Set! (name exp) #:prefab)
 (struct Var (name) #:prefab)
-(struct Vlam (names rest exp [free #:auto #:mutable]) #:prefab)
+(struct Vlam (names rest exp [free #:auto #:mutable]) #:prefab #:auto-value #f)
 (struct Letcc (name exp) #:prefab)
 
 (define-match-expander Lam:

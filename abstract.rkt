@@ -155,29 +155,33 @@
 
 (define aval
   (lambda (kind l . args)
-    (let* ((l (if (or (eq? Const-split #t)
-                      (and (pair? Const-split) (memq kind Const-split))
-                      (not (null? args))
-                      (eq? kind 'prim))
-                  l
-                  0))
-           (key `(,kind ,@args))
-           (r (assoc key (vector-ref aval-hash-table l))))
-      (if r
-          (cdr r)
-          (let ((v `(,kind ,l ,@args))
-                (n n-avals))
-            (when (= n (vector-length aval-table))
-              (let ((x (vector-tabulate
-                         (* 2 n)
-                         (lambda (i)
-                           (if (< i n) (vector-ref aval-table i) 0)))))
-                (set! aval-table x)))
-            (vector-set! aval-table n v)
-            (vector-set! aval-hash-table l
-              (cons (cons key n) (vector-ref aval-hash-table l)))
-            (set! n-avals (+ 1 n-avals))
-            n)))))
+    (define l*
+      (cond [(or (eq? Const-split #t)
+              (and (pair? Const-split) (memq kind Const-split))
+              (not (null? args))
+              (eq? kind 'prim))
+             l]
+            [else 0]))
+    (define key `(,kind ,@args))
+    (define r (assoc key (vector-ref aval-hash-table l*)))
+    (cond [r (cdr r)]
+          [else
+           (define v `(,kind ,l* ,@args))
+           (define n n-avals)
+           ;; Grow the vector if it needs space.
+           (when (= n (vector-length aval-table))
+             (define x
+               (vector-tabulate
+                (* 2 n)
+                (lambda (i)
+                  (if (< i n) (vector-ref aval-table i) 0))))
+             (set! aval-table x))
+           (vector-set! aval-table n v)
+           (vector-set! aval-hash-table l*
+                        (cons (cons key n)
+                              (vector-ref aval-hash-table l*)))
+           (set! n-avals (+ 1 n-avals))
+           n])))
 
 (set-aval-kind!    (lambda (n) (car (vector-ref aval-table n))))
 (set-aval-label!   (lambda (n) (cadr (vector-ref aval-table n))))
@@ -298,7 +302,7 @@
     (if (or (not (intset-empty? (Point-old p)))
             (not (intset-empty? (Point-new p))))
         (action)
-        (p-> p (let ((first #t))
+        (p-> p (let ([first #t])
                  (lambda (new)
                    (when first
                      (set! first #f)
@@ -332,14 +336,12 @@
   (lambda ()
     (let loop ()
       (unless (zero? (queue-size work-q))
-        (let* ([p (queue-pop! work-q)]
-               [new (Point-new p)])
-          (set-Point-old! p (intset-union (Point-old p) new))
-          (set-Point-new! p (intset-make-empty))
-          (for-each
-            (lambda (succ) (succ new))
-            (Point-succ p))
-          (loop))))))
+        (define p (queue-pop! work-q))
+        (define new (Point-new p))
+        (set-Point-old! p (intset-union (Point-old p) new))
+        (set-Point-new! p (intset-make-empty))
+        (for ([succ (in-list (Point-succ p))]) (succ new))
+        (loop)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Printing
@@ -347,29 +349,26 @@
 (define print-aval
   (let ((penv (match-lambda [(cons n k) `(,(Name-name n) -> ,k)])))
     (lambda (x)
-      (let ((kind (aval-kind x))
-            (l (aval-label x)))
-        (cond [(aval-is-simple? x)
-               `(,kind ,l)]
-              [(memq kind '(closure))
-               `(,kind ,l
-                       ,(print-contour (aval-contour x))
-                       ,(map penv (aval-env x)))]
-              [else
-               `(,kind ,l
-                       ,(print-contour (aval-contour x))
-                       ,@(map (lambda (f)
-                                (cons
-                                  (let ([l (Point-label f)])
-                                    (if (Name? l)
-                                        (Name-name l)
-                                        l))
-                                  (Point-contour f)))
-                              (aval-fields x)))])))))
+      (define kind (aval-kind x))
+      (define l (aval-label x))
+      (cond [(aval-is-simple? x)
+             `(,kind ,l)]
+            [(memq kind '(closure))
+             `(,kind ,l
+                     ,(print-contour (aval-contour x))
+                     ,(map penv (aval-env x)))]
+            [else
+             `(,kind ,l
+                     ,(print-contour (aval-contour x))
+                     ,@(for/list ([f (in-list (aval-fields x))])
+                         (define l (Point-label f))
+                         (cons (cond [(Name? l) (Name-name l)]
+                                     [else l])
+                               (Point-contour f))))]))))
 
 (define print-point
   (lambda (a)
-    (map print-aval (intset->list (point-elements a)))))
+    (map print-aval a)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Statistics
@@ -378,16 +377,16 @@
 
 (set-print-abstract-statistics!!
   (lambda ()
-    (let* ([size (lambda (p) (intset-size (point-elements p)))]
-           [n (+ (for*/sum ([v (in-list variables)]
+    (define size (lambda (p) (intset-size (point-elements p))))
+    (define n (+ (for*/sum ([v (in-list variables)]
                             [p (in-list (points-at-var v))])
                            (size p))
                  (for*/sum ([l (in-range n-labels)]
-                           [p (in-list (points-at-label l))])
-                          (size p)))])
-      (printf "; ~a program points, ~a distinct values, ~a values in the graph~%"
-        n-points n-avals n)
-      (printf "; ~a entries in call map~%" (total-call-map-size)))))
+                            [p (in-list (points-at-label l))])
+                           (size p))))
+    (printf "; ~a program points, ~a distinct values, ~a values in the graph~%"
+            n-points n-avals n)
+    (printf "; ~a entries in call map~%" (total-call-map-size))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; ALL OLD AND POSSIBLY OUT OF DATE
@@ -501,16 +500,20 @@
               ((zero? (list-ref dist n)) (loop (- n 1) acc))
               (else (loop (- n 1) (cons `(,n : ,(list-ref dist n)) acc))))))))
 
+(define (max-list lst)
+  (for/fold ([acc 0]) ([x (in-list lst)])
+    (max acc x)))
+
 (define h-union-counts
   (lambda ()
-    (let* ((counts (reverse union-counts))
-           (max-count (foldl max 0 counts)))
-      (histogram
-        (map (lambda (x)
-               (if (negative? x)
-                   (- max-count)
-                   x))
-             counts)))))
+    (define counts (reverse union-counts))
+    (define max-count (max-list counts))
+    (histogram
+     (map (lambda (x)
+            (if (negative? x)
+                (- max-count)
+                x))
+          counts))))
 
 (define histogram
   (lambda (dist)
@@ -521,7 +524,7 @@
                            (cons x acc)))
                      '()
                      dist))
-           (max-count (foldl max 0 counts)))
+           (max-count (max-list counts)))
       (printf "X-axis 0:~a, Y-axis 0:~a~n" (length counts) max-count)
       (make-histogram
         intset-version
